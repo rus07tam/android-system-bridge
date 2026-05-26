@@ -7,15 +7,15 @@ plugins {
 }
 
 android {
-  namespace = "com.example"
+  namespace = "org.ruject.gateway"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "com.example"
+    applicationId = "org.ruject.gateway"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
+    versionName = System.getenv("VERSION_NAME") ?: "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -23,16 +23,22 @@ android {
   signingConfigs {
     create("release") {
       val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-      storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD")
-      keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD")
+      val keystoreFile = file(keystorePath)
+      if (keystoreFile.exists()) {
+        storeFile = keystoreFile
+        storePassword = System.getenv("STORE_PASSWORD")
+        keyAlias = System.getenv("KEY_ALIAS")?.takeIf { it.isNotBlank() } ?: "upload"
+        keyPassword = System.getenv("KEY_PASSWORD")
+      }
     }
     create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
-      storePassword = "android"
-      keyAlias = "androiddebugkey"
-      keyPassword = "android"
+      val keystoreFile = file("${rootDir}/debug.keystore")
+      if (keystoreFile.exists()) {
+        storeFile = keystoreFile
+        storePassword = "android"
+        keyAlias = "androiddebugkey"
+        keyPassword = "android"
+      }
     }
   }
 
@@ -41,10 +47,14 @@ android {
       isCrunchPngs = false
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      signingConfig = signingConfigs.getByName("release")
+      signingConfigs.findByName("release")?.takeIf { it.storeFile != null }?.let {
+        signingConfig = it
+      }
     }
     debug {
-      signingConfig = signingConfigs.getByName("debugConfig")
+      signingConfigs.findByName("debugConfig")?.takeIf { it.storeFile != null }?.let {
+        signingConfig = it
+      }
     }
   }
   compileOptions {
@@ -77,7 +87,7 @@ dependencies {
   // implementation(libs.androidx.camera.lifecycle)
   // implementation(libs.androidx.camera.view)
   implementation(libs.androidx.compose.material.icons.core)
-  // implementation(libs.androidx.compose.material.icons.extended)
+  implementation(libs.androidx.compose.material.icons.extended)
   implementation(libs.androidx.compose.material3)
   implementation(libs.androidx.compose.ui)
   implementation(libs.androidx.compose.ui.graphics)

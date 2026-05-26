@@ -1,0 +1,1160 @@
+openapi: 3.1.0
+info:
+  title: Android System Bridge HTTP API
+  version: 1.0.0
+  license:
+    name: Unlicense
+    url: https://unlicense.org
+  description: |
+    OpenAPI description of the **HTTP** surface implemented in `GatewayService`.
+    Default port is `8080` (configurable in the app). The server uses plain HTTP (no TLS).
+
+    **Not covered by this file** (different transports, same `ToolRegistry`):
+    - WebSocket — see `x-websocket` below
+    - Android broadcast `org.ruject.gateway.ACTION_COMMAND`
+    - ContentProvider `content://org.ruject.gateway.provider`
+
+    ### Authorization
+
+    Token is read from:
+    - `Authorization: Bearer <token>` header (`Bearer ` prefix, case-sensitive), or
+    - query parameter `token` on the request path (first `token=` in the query string)
+
+    When `allow_external` is **false** (default; server binds to `127.0.0.1`), requests are
+    **accepted without a token**.
+
+    When `allow_external` is **true** (server binds to all interfaces), a **valid token is required**
+    or the server responds with `401`.
+
+    ### Tool HTTP semantics
+
+    - `POST /tools/{category}.{action}` always returns **HTTP 200** when the route is recognized,
+      even if the JSON body has `"status": "error"` (tool/runtime failure).
+    - Unknown category in `ToolRegistry` → JSON `"status": "error"` with HTTP 200.
+    - Malformed route (not under `/tools/`) → HTTP 404.
+    - Request body is optional; empty or missing body is treated as `{}`.
+    - Body must be a JSON **object** (parsed via `JSONObject`); other shapes are ignored as params.
+
+servers:
+  - url: http://127.0.0.1:{port}
+    description: Local bind (default when Allow WAN is off)
+    variables:
+      port:
+        default: "8080"
+  - url: http://0.0.0.0:{port}
+    description: All interfaces (when Allow WAN is on)
+    variables:
+      port:
+        default: "8080"
+
+security: []
+
+paths:
+  /:
+    get:
+      operationId: getServerStatus
+      summary: Server status
+      description: |
+        Matches `path == "/"` exactly (a query string on `/` is **not** matched by the server).
+      security:
+        - bearerAuth: []
+        - queryToken: []
+        - {}
+      responses:
+        "200":
+          description: Server is running
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                enum: ["*"]
+            Connection:
+              schema:
+                type: string
+                enum: [close]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /index:
+    get:
+      operationId: getServerStatusIndex
+      summary: Server status (alias)
+      description: Same handler as `GET /` when path starts with `/index`.
+      security:
+        - bearerAuth: []
+        - queryToken: []
+        - {}
+      responses:
+        "200":
+          description: Server is running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /tools/{category}.{action}:
+    post:
+      operationId: executeTool
+      summary: Execute a tool
+      description: |
+        Path is parsed as `category` = segment before the first `.`, `action` = segment after
+        (defaults: `deviceinfo` / `read` if dots are missing).
+
+        `deviceinfo` ignores `action` — any action string returns the same device info payload.
+      parameters:
+        - $ref: "#/components/parameters/Category"
+        - $ref: "#/components/parameters/Action"
+      security:
+        - bearerAuth: []
+        - queryToken: []
+        - {}
+      requestBody:
+        required: false
+        description: |
+          JSON object passed to `ToolRegistry` as `params`. Omitted body or empty body → `{}`.
+          Per-action field definitions are in `components/schemas/*Params` and `x-tools`.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToolParams"
+            examples:
+              deviceinfo.read:
+                summary: deviceinfo.read
+                value: {}
+              contacts.search:
+                summary: contacts.search
+                value:
+                  query: Alice
+              contacts.create:
+                summary: contacts.create
+                value:
+                  name: Jane Doe
+                  phone: "+15551234567"
+              sms.send:
+                summary: sms.send
+                value:
+                  recipient: "+15551234567"
+                  message: Hello
+      responses:
+        "200":
+          description: Tool result (check JSON `status` field)
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                enum: ["*"]
+            Connection:
+              schema:
+                type: string
+                enum: [close]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolResponse"
+              examples:
+                deviceinfo.read:
+                  summary: deviceinfo.read success
+                  value:
+                    status: success
+                    device_model: Pixel 8
+                    sdk_version: 34
+                    battery_percentage: 87.0
+                    memory_total_bytes: 8000000000
+                    memory_available_bytes: 4000000000
+                    storage_total_bytes: 64000000000
+                    storage_available_bytes: 32000000000
+                    network_type: WIFI
+                contacts.search:
+                  summary: contacts.search success
+                  value:
+                    status: success
+                    contacts:
+                      - name: Alice
+                        number: "+15551234567"
+                        id: 42
+                tool.error:
+                  summary: unknown category
+                  value:
+                    status: error
+                    message: "Unknown tool category: foo"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Path does not start with `/tools/`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HttpError"
+              example:
+                status: error
+                message: "Not Found. Use /tools/category.action format."
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Value from app UI Authentication Token. Header must use prefix "Bearer " (with trailing space).
+    queryToken:
+      type: apiKey
+      in: query
+      name: token
+      description: Alternative to Bearer header; read from path query string on the request line.
+
+  parameters:
+    Category:
+      name: category
+      in: path
+      required: true
+      schema:
+        type: string
+        enum:
+          - contacts
+          - calendar
+          - alarms
+          - sms
+          - notifications
+          - clipboard
+          - accessibility
+          - usagestats
+          - intents
+          - filesystem
+          - deviceinfo
+          - media
+    Action:
+      name: action
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid token when `allow_external` is true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/HttpError"
+          example:
+            status: error
+            message: "Unauthorized - Missing or invalid Bearer security token."
+    NotFound:
+      description: Unknown GET path
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/HttpError"
+          example:
+            status: error
+            message: Not Found
+    MethodNotAllowed:
+      description: HTTP method other than GET or POST
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/HttpError"
+          example:
+            status: error
+            message: Method Not Allowed
+
+  schemas:
+    HttpError:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        message:
+          type: string
+
+    ToolError:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        message:
+          type: string
+      description: |
+        Emitted for unknown category, missing permissions/services, handler exceptions
+        (`Execution error: …`), or failed tool logic. HTTP status is still 200 for `/tools/…`
+        except routing/auth errors above.
+
+    ServerStatus:
+      type: object
+      required: [status, port, allow_external, sdk]
+      properties:
+        status:
+          type: string
+          enum: [running]
+        port:
+          type: integer
+        allow_external:
+          type: boolean
+        sdk:
+          type: integer
+          description: Build.VERSION.SDK_INT
+
+    ToolParams:
+      type: object
+      additionalProperties: true
+      description: Tool input map (`Map<String, Any?>`). See *Params schemas for each action.
+
+    ToolResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [success, error]
+      additionalProperties: true
+      description: |
+        Tool output object. Always includes `status`. Other keys depend on category/action;
+        see *Success / ToolError component schemas.
+
+    # --- Request params (ToolRegistry) ---
+
+    ContactsReadParams:
+      type: object
+      properties:
+        query:
+          type: string
+          default: ""
+      additionalProperties: false
+
+    ContactsCreateParams:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        phone:
+          type: string
+          default: ""
+      additionalProperties: false
+
+    ContactsDeleteParams:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+      additionalProperties: false
+
+    CalendarCreateParams:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+          default: ""
+        start:
+          type: integer
+          format: int64
+          description: Epoch ms; default `System.currentTimeMillis()`
+        end:
+          type: integer
+          format: int64
+          description: Epoch ms; default `start + 3600000`
+      additionalProperties: false
+
+    CalendarDeleteParams:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: integer
+          format: int64
+      additionalProperties: false
+
+    AlarmsCreateParams:
+      type: object
+      required: [hour, minutes]
+      properties:
+        hour:
+          type: integer
+        minutes:
+          type: integer
+        message:
+          type: string
+          default: API Alarm
+      additionalProperties: false
+
+    SmsSendParams:
+      type: object
+      required: [recipient, message]
+      properties:
+        recipient:
+          type: string
+        message:
+          type: string
+      additionalProperties: false
+
+    SmsReadParams:
+      type: object
+      properties:
+        limit:
+          type: integer
+          default: 20
+      additionalProperties: false
+
+    SmsCallsParams:
+      type: object
+      properties:
+        limit:
+          type: integer
+          default: 10
+      additionalProperties: false
+
+    NotificationsDismissParams:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+      additionalProperties: false
+
+    NotificationsReplyParams:
+      type: object
+      required: [key, text]
+      properties:
+        key:
+          type: string
+        text:
+          type: string
+      additionalProperties: false
+
+    ClipboardWriteParams:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+      additionalProperties: false
+
+    AccessibilityActionParams:
+      type: object
+      properties:
+        text:
+          type: string
+          description: Find node by text or contentDescription (case-insensitive contains)
+        node_id:
+          type: integer
+          description: AccessibilityNodeInfo.hashCode() from a prior dump
+        action:
+          type: string
+          enum: [click, scroll_forward, scroll_backward, focus]
+          default: click
+      description: Requires `text` or `node_id` to resolve a node.
+      additionalProperties: false
+
+    AccessibilityGlobalActionParams:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [back, home, recents, notifications, quick_settings]
+          default: back
+      additionalProperties: false
+
+    IntentsLaunchParams:
+      type: object
+      required: [package]
+      properties:
+        package:
+          type: string
+          description: Package name (param key is `package` in JSON)
+      additionalProperties: false
+
+    IntentsDeeplinkParams:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+      additionalProperties: false
+
+    FilesystemWriteParams:
+      type: object
+      required: [filename]
+      properties:
+        filename:
+          type: string
+        content:
+          type: string
+          default: ""
+      additionalProperties: false
+
+    FilesystemReadParams:
+      type: object
+      required: [filename]
+      properties:
+        filename:
+          type: string
+      additionalProperties: false
+
+    FilesystemDeleteParams:
+      type: object
+      required: [filename]
+      properties:
+        filename:
+          type: string
+      additionalProperties: false
+
+    MediaMuteParams:
+      type: object
+      properties:
+        mute:
+          type: boolean
+          default: true
+      additionalProperties: false
+
+    MediaVolumeParams:
+      type: object
+      required: [volume]
+      properties:
+        volume:
+          type: integer
+      additionalProperties: false
+
+    MediaKeyParams:
+      type: object
+      required: [key_code]
+      properties:
+        key_code:
+          type: integer
+          description: Android `KeyEvent` code (e.g. 85 play/pause, 87 next, 88 previous)
+      additionalProperties: false
+
+    # --- Success payloads ---
+
+    DeviceInfoSuccess:
+      type: object
+      required:
+        - status
+        - device_model
+        - sdk_version
+        - battery_percentage
+        - memory_total_bytes
+        - memory_available_bytes
+        - storage_total_bytes
+        - storage_available_bytes
+        - network_type
+      properties:
+        status:
+          type: string
+          enum: [success]
+        device_model:
+          type: string
+        sdk_version:
+          type: integer
+        battery_percentage:
+          type: number
+          description: Float in code; `-1` if unknown
+        memory_total_bytes:
+          type: integer
+          format: int64
+        memory_available_bytes:
+          type: integer
+          format: int64
+        storage_total_bytes:
+          type: integer
+          format: int64
+        storage_available_bytes:
+          type: integer
+          format: int64
+        network_type:
+          type: string
+          description: WIFI, CELLULAR, legacy typeName, or NONE
+
+    ContactEntry:
+      type: object
+      properties:
+        name:
+          type: string
+        number:
+          type: string
+        id:
+          type: integer
+          format: int64
+
+    ContactsReadSuccess:
+      type: object
+      required: [status, contacts]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        contacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContactEntry"
+
+    ContactsCreateSuccess:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+
+    ContactsDeleteSuccess:
+      type: object
+      required: [status, deleted_count]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        deleted_count:
+          type: integer
+
+    CalendarEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        description:
+          type: string
+        start:
+          type: integer
+          format: int64
+        end:
+          type: integer
+          format: int64
+
+    CalendarListSuccess:
+      type: object
+      required: [status, events]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/CalendarEvent"
+
+    CalendarCreateSuccess:
+      type: object
+      required: [status, event_id]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        event_id:
+          type: ["string", "null"]
+          description: uri.lastPathSegment after insert
+
+    CalendarDeleteSuccess:
+      type: object
+      required: [status, deleted_count]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        deleted_count:
+          type: integer
+
+    AlarmsCreateSuccess:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+
+    AlarmsListSuccess:
+      type: object
+      required: [status, info]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        info:
+          type: string
+
+    SmsSendSuccess:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+
+    SmsMessage:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        sender:
+          type: string
+        body:
+          type: string
+        timestamp:
+          type: integer
+          format: int64
+
+    SmsReadSuccess:
+      type: object
+      required: [status, messages]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/SmsMessage"
+
+    CallLogEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        number:
+          type: string
+        type:
+          type: string
+          enum: [INCOMING, OUTGOING, MISSED, UNKNOWN]
+        timestamp:
+          type: integer
+          format: int64
+        duration:
+          type: integer
+          format: int64
+
+    SmsCallsSuccess:
+      type: object
+      required: [status, calls]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        calls:
+          type: array
+          items:
+            $ref: "#/components/schemas/CallLogEntry"
+
+    NotificationEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+        package:
+          type: string
+        title:
+          type: string
+        text:
+          type: string
+        timestamp:
+          type: integer
+          format: int64
+        key:
+          type: string
+
+    NotificationsActiveSuccess:
+      type: object
+      required: [status, notifications]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        notifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/NotificationEntry"
+
+    NotificationsDismissSuccess:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+
+    NotificationsReplySuccess:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+
+    ClipboardReadSuccess:
+      type: object
+      required: [status, text]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        text:
+          type: string
+
+    ClipboardWriteSuccess:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+
+    AccessibilityNode:
+      type: object
+      properties:
+        class:
+          type: string
+        text:
+          type: string
+        content_description:
+          type: string
+        clickable:
+          type: boolean
+        focusable:
+          type: boolean
+        scrollable:
+          type: boolean
+        bounds:
+          type: string
+        node_id:
+          type: integer
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccessibilityNode"
+
+    AccessibilityDumpSuccess:
+      type: object
+      required: [status, root]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        root:
+          $ref: "#/components/schemas/AccessibilityNode"
+
+    AccessibilityActionSuccess:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [success, error]
+        message:
+          type: string
+
+    AccessibilityGlobalActionSuccess:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [success, error]
+        message:
+          type: string
+
+    UsageStatEntry:
+      type: object
+      properties:
+        package:
+          type: string
+        foreground_time_ms:
+          type: integer
+          format: int64
+        last_time_used:
+          type: integer
+          format: int64
+
+    UsageStatsListSuccess:
+      type: object
+      required: [status, usage_stats]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        usage_stats:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsageStatEntry"
+
+    UsageStatsForegroundSuccess:
+      type: object
+      required: [status, foreground_app, last_active_time]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        foreground_app:
+          type: string
+        last_active_time:
+          type: integer
+          format: int64
+
+    IntentsLaunchSuccess:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [success, error]
+        message:
+          type: string
+
+    IntentsDeeplinkSuccess:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [success]
+
+    PackageEntry:
+      type: object
+      properties:
+        package:
+          type: string
+        name:
+          type: string
+        enabled:
+          type: boolean
+        system:
+          type: boolean
+
+    IntentsDiscoverySuccess:
+      type: object
+      required: [status, packages]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        packages:
+          type: array
+          items:
+            $ref: "#/components/schemas/PackageEntry"
+
+    FileEntry:
+      type: object
+      properties:
+        name:
+          type: string
+        size:
+          type: integer
+          format: int64
+        is_dir:
+          type: boolean
+
+    FilesystemListSuccess:
+      type: object
+      required: [status, files]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileEntry"
+
+    FilesystemWriteSuccess:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+
+    FilesystemReadSuccess:
+      type: object
+      required: [status, content]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        content:
+          type: string
+
+    FilesystemDeleteSuccess:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [success, error]
+        message:
+          type: string
+
+    MediaMuteSuccess:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [success]
+
+    MediaVolumeSuccess:
+      type: object
+      required: [status, volume, max_volume]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        volume:
+          type: integer
+        max_volume:
+          type: integer
+
+    MediaKeySuccess:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [success]
+
+# WebSocket protocol (same auth rules as HTTP on upgrade request)
+x-websocket:
+  url: ws://127.0.0.1:{port}
+  upgrade:
+    requiredHeaders:
+      Upgrade: websocket
+      Connection: upgrade (case-insensitive substring match)
+      Sec-WebSocket-Key: required
+    authorization: "Same as HTTP (Authorization: Bearer header or ?token= query on request path)"
+  serverToClient:
+    connectionEstablished:
+      description: Sent immediately after successful handshake
+      schema:
+        type: object
+        required: [type, message]
+        properties:
+          type:
+            const: connection_established
+          message:
+            type: string
+            example: WebSocket IPC bridge active.
+    toolResponse:
+      description: ToolRegistry JSON result with echoed id field
+      schema:
+        type: object
+        required: [id]
+        properties:
+          id:
+            type: string
+            description: Copied from request (optString, default empty string)
+        additionalProperties: true
+    event:
+      description: Push event from broadcastWsEvent
+      schema:
+        type: object
+        required: [type, event_type, data, timestamp]
+        properties:
+          type:
+            const: event
+          event_type:
+            type: string
+            enum: [clipboard_changed, call_state_changed]
+          data:
+            oneOf:
+              - type: object
+                required: [text]
+                properties:
+                  text:
+                    type: string
+              - type: object
+                required: [state, number]
+                properties:
+                  state:
+                    type: string
+                    enum: [RINGING, OFFHOOK, IDLE, UNKNOWN]
+                  number:
+                    type: string
+          timestamp:
+            type: integer
+            format: int64
+  clientToServer:
+    toolRequest:
+      description: Parsed with JSONObject; missing params object yields empty map
+      schema:
+        type: object
+        properties:
+          id:
+            type: string
+            default: ""
+          category:
+            type: string
+            default: ""
+          action:
+            type: string
+            default: ""
+          params:
+            type: object
+            additionalProperties: true
+
+# Supported category.action pairs (HTTP POST and WebSocket)
+x-tools:
+  - category: deviceinfo
+    actions: [read]
+    notes: Any action string returns the same payload; `read` is conventional.
+  - category: contacts
+    actions: [read, search, create, delete]
+  - category: calendar
+    actions: [list, create, delete]
+  - category: alarms
+    actions: [create, list]
+  - category: sms
+    actions: [send, read, calls]
+  - category: notifications
+    actions: [active, dismiss, reply]
+    requires: GatewayNotificationListenerService enabled
+  - category: clipboard
+    actions: [read, write]
+  - category: accessibility
+    actions: [dump, action, global_action]
+    requires: GatewayAccessibilityService enabled
+  - category: usagestats
+    actions: [list, foreground]
+  - category: intents
+    actions: [launch, deeplink, discovery]
+  - category: filesystem
+    actions: [list, read, write, delete]
+    notes: App internal `context.filesDir` only
+  - category: media
+    actions: [mute, volume, media_key]
